@@ -22,6 +22,7 @@ Do not use competitor sources for e-Transfer Chatter, and do not use e-Transfer 
 
 1. Every entry must use the exact words from the input. Copy verbatim quotes when available.
 2. If no verbatim quote exists, use a short snippet (under 30 words) from the title or snippet field.
+2a. **Choosing what to quote from Reddit posts:** Each entry has a `Title:` (headline) and a `Snippet:` (actual post body). Use whichever is more informative and quotable. If the Snippet contains a richer, more specific story than the title, quote from the Snippet. If the title is already descriptive on its own, using it is fine. Never quote a generic title when the Snippet has more concrete detail — e.g., if the Snippet mentions a specific dollar amount, bank, institution, or personal experience, pull from there instead.
 3. If a section has no relevant data, write exactly: Nothing notable this scan.
 4. Never fabricate trends, comparisons, percentages, or urgency.
 5. Never make recommendations or use strategy language ("should", "need to", "consider").

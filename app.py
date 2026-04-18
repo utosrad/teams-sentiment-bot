@@ -985,7 +985,7 @@ def _parse_reddit_post(post: dict, cutoff_ts: float) -> dict | None:
     post_dt = datetime.fromtimestamp(created, tz=timezone.utc)
     return {
         "title": title,
-        "snippet": selftext[:600] if selftext else title,
+        "snippet": selftext[:900] if selftext else title,
         "link": f"https://www.reddit.com{permalink}",
         "source": f"Reddit/r/{subreddit_name}" if subreddit_name else "Reddit",
         "date": post_dt.strftime("%B %d, %Y"),
@@ -1425,7 +1425,7 @@ async def fetch_biweekly_mentions() -> str:
 
     if etransfer_social:
         lines.append("=== e-TRANSFER COMMUNITY (REDDIT, RFD, X) ===")
-        lines += _fmt("S", etransfer_social, 60, 500)
+        lines += _fmt("S", etransfer_social, 60, 750)
 
     if etransfer_press:
         lines.append("=== e-TRANSFER NEWS ===")
