@@ -11,6 +11,7 @@ Each mention has a `Title:` (headline) and a `Snippet:` (actual post body). When
 - A real person describes a personal experience with e-Transfer or a competitor app (good or bad)
 - Someone shares a specific frustration, delay, hold, limit, fraud, scam, or error
 - Someone explicitly compares e-Transfer to an alternative (Wise, PayPal, Wealthsimple, etc.)
+- It describes a concrete market development: a product launch, new feature, pricing change, acquisition, partnership, or a competitor entering the Canadian market
 - The snippet contains vivid, specific language that could be quoted in a report ("my transfer was held for 3 days", "I got scammed via auto-deposit", "switched to Wise because e-transfer fees...")
 - A Reddit post has meaningful engagement (score or comment count signals it resonated)
 - It's a community forum post where someone is asking for help or venting about a real experience
