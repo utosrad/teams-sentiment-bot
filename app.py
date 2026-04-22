@@ -68,6 +68,8 @@ MAX_MENTION_AGE_DAYS = int(os.environ.get("MAX_MENTION_AGE_DAYS", "120"))
 QUALITY_STRICT = os.environ.get("QUALITY_STRICT", "1") == "1"
 TWITTERAPI_IO_KEY = os.environ.get("TWITTERAPI_IO_KEY", "")
 TWITTERAPI_IO_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
+REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", "")
 
 EASTERN_TZ = ZoneInfo("America/Toronto")
 
@@ -1143,13 +1145,71 @@ def _parse_reddit_post(post: dict, cutoff_ts: float) -> dict | None:
     }
 
 
+# ── Reddit OAuth token cache ──────────────────────────────────────────────────
+_reddit_oauth_token: str = ""
+_reddit_oauth_expires: float = 0.0
+
+
+async def _get_reddit_oauth_token() -> str:
+    """Fetch or return cached Reddit OAuth token using client_credentials grant.
+
+    Uses oauth.reddit.com — not rate-limited by IP the same way as www.reddit.com.
+    Returns empty string if credentials are missing or request fails.
+    """
+    global _reddit_oauth_token, _reddit_oauth_expires
+    if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET:
+        return ""
+    import time
+    if _reddit_oauth_token and time.time() < _reddit_oauth_expires - 60:
+        return _reddit_oauth_token
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://www.reddit.com/api/v1/access_token",
+                data={"grant_type": "client_credentials"},
+                auth=(REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET),
+                headers={"User-Agent": _REDDIT_HEADERS["User-Agent"]},
+            )
+        if r.status_code != 200:
+            logger.warning(f"Reddit OAuth token request failed: {r.status_code}")
+            return ""
+        data = r.json()
+        _reddit_oauth_token = data.get("access_token", "")
+        _reddit_oauth_expires = time.time() + data.get("expires_in", 3600)
+        logger.info("[reddit-oauth] token refreshed successfully")
+        return _reddit_oauth_token
+    except Exception as e:
+        logger.warning(f"Reddit OAuth token error: {e}")
+        return ""
+
+
 async def _reddit_get(url: str, params: dict) -> dict | None:
-    """GET a Reddit JSON endpoint using httpx (urllib gets 403'd by Reddit's TLS check)."""
+    """GET a Reddit JSON endpoint. Uses OAuth API when credentials are set,
+    falls back to public JSON API otherwise."""
+    token = await _get_reddit_oauth_token()
+    if token:
+        # oauth.reddit.com — bypasses IP-based rate limiting
+        oauth_url = url.replace("https://www.reddit.com", "https://oauth.reddit.com")
+        headers = {
+            "User-Agent": _REDDIT_HEADERS["User-Agent"],
+            "Authorization": f"Bearer {token}",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15, headers=headers) as client:
+                r = await client.get(oauth_url, params=params)
+            if r.status_code == 200:
+                return r.json()
+            logger.warning(f"Reddit OAuth API {r.status_code} for {oauth_url}")
+        except Exception as e:
+            logger.warning(f"Reddit OAuth API failed: {e}")
+        # Fall through to public API if OAuth fails
+
+    # Public JSON API fallback
     try:
         async with httpx.AsyncClient(timeout=15, headers=_REDDIT_HEADERS) as client:
             r = await client.get(url, params=params)
         if r.status_code != 200:
-            logger.warning(f"Reddit API {r.status_code} for {url}")
+            logger.warning(f"Reddit public API {r.status_code} for {url}")
             return None
         return r.json()
     except Exception as e:
@@ -2606,6 +2666,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resend_key_hint = f"✅ set ({RESEND_API_KEY[:6]}...)" if RESEND_API_KEY else "❌ missing"
     kimi_key_hint = f"✅ set ({KIMI_API_KEY[:6]}...)" if KIMI_API_KEY else "❌ missing"
     twitter_key_hint = f"✅ twitterapi.io ({TWITTERAPI_IO_KEY[:6]}...)" if TWITTERAPI_IO_KEY else "⚠️ DDG fallback"
+    reddit_hint = f"✅ OAuth ({REDDIT_CLIENT_ID[:6]}...)" if REDDIT_CLIENT_ID else "⚠️ public API (may be blocked)"
     await update.message.reply_text(
         f"✅ Bot running — {now_est()}\n"
         f"Search provider: DuckDuckGo (ddgs)\n"
@@ -2617,6 +2678,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Resend key: {resend_key_hint}\n"
         f"Kimi key: {kimi_key_hint}\n"
         f"Twitter: {twitter_key_hint}\n"
+        f"Reddit: {reddit_hint}\n"
         f"Email from: {EMAIL_FROM or '❌ missing'}\n"
         f"Email to: {EMAIL_TO or '❌ missing'}\n"
         f"Admin: {is_admin}\n"
