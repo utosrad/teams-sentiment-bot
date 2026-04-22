@@ -754,6 +754,11 @@ _ETRANSFER_SIGNAL_TOKENS = [
     "e-transfer", "etransfer", "interac", "auto-deposit", "autodeposit",
     "fraud", "scam", "hold", "pending", "declined", "limit", "delay", "reversal",
 ]
+_CANADIAN_BANK_NAMES = [
+    "td bank", "rbc", "scotiabank", "bmo", "cibc", "national bank",
+    "tangerine", "eq bank", "simplii", "desjardins", "hsbc canada",
+]
+_DOLLAR_AMOUNT_RE = re.compile(r"\$\s*\d[\d,]*")
 _COMPETITOR_BRANDS = [
     "wise", "paypal", "wealthsimple", "koho", "apple pay", "google pay",
     "revolut", "neo financial", "venmo", "zelle", "cash app", "square", "stripe",
@@ -768,7 +773,12 @@ _LOW_SIGNAL_PATTERNS = [
 
 
 def _mention_quality_score(mention: dict, section: str) -> float:
-    """Score mention quality deterministically before sending to the LLM."""
+    """Score mention quality using platform-specific signals, normalized to a common scale.
+
+    Reddit:  upvotes (capped 500) + comments (capped 100) → 0–4 pts
+    Twitter: (likes + retweets×2 + replies) (capped 1000) → 0–4 pts
+    Both:    snippet length, keyword signals, dollar amounts, bank names
+    """
     text = " ".join(
         [
             mention.get("title", ""),
@@ -785,14 +795,43 @@ def _mention_quality_score(mention: dict, section: str) -> float:
     elif source_tier == "tier2_reported":
         score += 1.0
 
+    # ── Platform-specific engagement signals (normalized to 0–4 pts each) ──
     if "reddit.com" in link:
-        score += min(float(mention.get("score", 0)), 20.0) / 5.0
-        score += min(float(mention.get("num_comments", 0)), 30.0) / 15.0
+        # Upvotes: community validation. Cap at 500 (most viral posts).
+        upvotes = min(float(mention.get("score", 0)), 500.0)
+        score += (upvotes / 500.0) * 3.0
+        # Comments: depth of discussion. Cap at 100.
+        comments = min(float(mention.get("num_comments", 0)), 100.0)
+        score += (comments / 100.0) * 1.0
 
+    elif mention.get("source") == "X/Twitter":
+        # Likes + retweets (2× weight — retweet = active amplification) + replies.
+        # Cap at 1000 total weighted engagement.
+        likes = mention.get("_likes") or mention.get("_engagement") or 0
+        retweets = mention.get("_retweets") or 0
+        replies = mention.get("_replies") or 0
+        weighted = min(float(likes + retweets * 2 + replies), 1000.0)
+        score += (weighted / 1000.0) * 3.0
+        # Views: weak signal (passive), only helps if very high (>10k)
+        views = mention.get("_views") or 0
+        if views >= 10000:
+            score += 0.5
+        elif views >= 1000:
+            score += 0.2
+
+    # ── Content quality signals (platform-neutral) ──
     snippet_len = len((mention.get("snippet", "") or "").strip())
     if snippet_len >= 90:
         score += 1.0
-    if snippet_len >= 180:
+    if snippet_len >= 200:
+        score += 0.5
+
+    # Dollar amounts signal a real personal experience (e.g. "my $2,400 transfer")
+    if _DOLLAR_AMOUNT_RE.search(text):
+        score += 1.0
+
+    # Canadian bank names signal relevant context
+    if any(bank in text for bank in _CANADIAN_BANK_NAMES):
         score += 0.5
 
     if any(p in text for p in _LOW_SIGNAL_PATTERNS):
@@ -949,7 +988,11 @@ async def _search_twitter_io(query: str, max_results: int = 10) -> list[dict]:
             "link": url,
             "date": _resolve_relative_date(created_at) if created_at else "",
             "source": "X/Twitter",
-            "_engagement": likes + retweets,
+            "_likes": likes,
+            "_retweets": retweets,
+            "_replies": tweet.get("replyCount") or 0,
+            "_views": tweet.get("viewCount") or 0,
+            "_engagement": likes + retweets,  # kept for backwards compat
         })
     return results
 
@@ -1465,18 +1508,12 @@ async def fetch_biweekly_mentions() -> str:
     await _enrich_dates_from_reddit_json(all_mentions, max_fetches=40)
     await _enrich_dates_from_meta(all_mentions, max_fetches=80)
 
-    # Sort social pool: Reddit high-score posts first, then Twitter by engagement,
-    # then everything else. This ensures Kimi sees the best content first and
-    # Reddit isn't crowded out even when Twitter volume is higher.
-    def _social_sort_key(m: dict) -> tuple:
-        source = m.get("source", "")
-        if source == "Reddit":
-            return (0, -(m.get("score") or 0))
-        if source == "X/Twitter":
-            return (1, -(m.get("_engagement") or 0))
-        return (2, 0)
-
-    etransfer_social.sort(key=_social_sort_key)
+    # Sort social pool by unified quality score — platform-neutral, signal-driven.
+    # Reddit upvotes/comments and Twitter likes/retweets/replies are each normalized
+    # to the same 0–4 pt range so neither platform dominates on raw volume alone.
+    etransfer_social.sort(
+        key=lambda m: _mention_quality_score(m, "etransfer"), reverse=True
+    )
 
     # Make recency decisions only on dated content to avoid stale/undated drift.
     etransfer_social = _filter_recent_dated_mentions(
