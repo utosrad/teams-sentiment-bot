@@ -907,21 +907,49 @@ async def _search_twitter_io(query: str, max_results: int = 10) -> list[dict]:
         logger.warning(f"[twitterapi.io] request failed for '{query}': {e}")
         return []
 
+    _PROMO_RE = re.compile(
+        r"\b(sign up|download|click here|visit us|check out|get started|"
+        r"use code|promo|discount|affiliate|refer a friend|sign-up bonus)\b",
+        re.IGNORECASE,
+    )
+    _PRONOUN_RE = re.compile(
+        r"\b(i|my|me|we|our|i've|i'm|i'd|i'll|we've|we're)\b", re.IGNORECASE
+    )
+
     results = []
-    for tweet in (data.get("tweets") or [])[:max_results]:
+    for tweet in (data.get("tweets") or []):
+        if len(results) >= max_results:
+            break
         text = (tweet.get("text") or "").strip()
         url = (tweet.get("url") or "").strip()
         created_at = (tweet.get("createdAt") or "").strip()
         author = tweet.get("author") or {}
         username = author.get("userName") or author.get("name") or ""
+
         if not text or not url:
             continue
+        # Skip very short tweets — no context
+        if len(text) < 60:
+            continue
+        # Skip promotional content
+        if _PROMO_RE.search(text):
+            continue
+        # Skip zero-engagement tweets with no personal voice — likely bots or noise
+        likes = tweet.get("likeCount") or 0
+        retweets = tweet.get("retweetCount") or 0
+        views = tweet.get("viewCount") or 0
+        has_engagement = (likes + retweets) > 0 or views >= 500
+        has_personal_voice = bool(_PRONOUN_RE.search(text))
+        if not has_engagement and not has_personal_voice:
+            continue
+
         results.append({
             "title": f"Tweet by @{username}" if username else "Tweet",
             "snippet": text,
             "link": url,
             "date": _resolve_relative_date(created_at) if created_at else "",
             "source": "X/Twitter",
+            "_engagement": likes + retweets,
         })
     return results
 
@@ -1407,7 +1435,7 @@ async def fetch_biweekly_mentions() -> str:
     # Use qdr:y so product launches and updates from the past year are captured.
     for query in competitor_ddg_queries:
         for search_type, tbs in [("search", "qdr:y"), ("news", "qdr:y")]:
-            results = await web_search(query, search_type, 8, tbs=tbs)
+            results = await web_search(query, search_type, 12, tbs=tbs)
             for r in results:
                 link = r.get("link", "")
                 if not link or link in seen_links or _is_blocked_domain(link):
@@ -1436,6 +1464,19 @@ async def fetch_biweekly_mentions() -> str:
     all_mentions = etransfer_social + etransfer_press + competitor_mentions
     await _enrich_dates_from_reddit_json(all_mentions, max_fetches=40)
     await _enrich_dates_from_meta(all_mentions, max_fetches=80)
+
+    # Sort social pool: Reddit high-score posts first, then Twitter by engagement,
+    # then everything else. This ensures Kimi sees the best content first and
+    # Reddit isn't crowded out even when Twitter volume is higher.
+    def _social_sort_key(m: dict) -> tuple:
+        source = m.get("source", "")
+        if source == "Reddit":
+            return (0, -(m.get("score") or 0))
+        if source == "X/Twitter":
+            return (1, -(m.get("_engagement") or 0))
+        return (2, 0)
+
+    etransfer_social.sort(key=_social_sort_key)
 
     # Make recency decisions only on dated content to avoid stale/undated drift.
     etransfer_social = _filter_recent_dated_mentions(
